@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: nbd-grid-node-atlas
+    runtime: static
+    buildCommand: ""
+    staticPublishPath: .
+    headers:
+      - path: /*
+        name: X-Robots-Tag
+        value: noindex, nofollow
+      - path: /*
+        name: Cache-Control
+        value: public, max-age=3600
