@@ -252,7 +252,7 @@ const REC = [
   ["Storage only", "--sonly"], ["Monitor", "--mon"]];
 const recColor = r => css((REC.find(x => x[0] === r) || REC[4])[1]);
 const REGIONS = D.regions;
-const state = {col: "rec", kv: 0, min: 0, q: "", recs: new Set(REC.map(r => r[0])), sel: null,
+const state = {col: "rec", kv: 0, min: 0, fit: "any", minDc: 0, minBess: 0, q: "", recs: new Set(REC.map(r => r[0])), sel: null,
   layers: {lines: true, plants: true, solar: true, dcs: true, bats: true, landing: false},
   stages: {Existing: true, Committed: true, Pipeline: true}, openOnly: false};
 const nodes = D.nodes.map(r => {
@@ -289,9 +289,9 @@ const paddOn = a => state.layers.wri && state.pcheck.has(a.stage === "nv" ? "pl"
 const assetCol = o => o.asset === "DC" ? "var(--dc)" : o.asset === "BESS" ? "var(--bess)" : "var(--both)";
 const SYM = {   // colours go in style, not presentation attributes, so CSS variables resolve
   Existing: c => `<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><rect x="1.5" y="1.5" width="9" height="9" style="fill:${c};stroke:${c === "currentColor" ? "currentColor" : "var(--ink)"};stroke-width:1.4"/></svg>`,
-  Committed: c => `<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 .8 11.2 6 6 11.2.8 6Z" style="fill:${c}"/></svg>`,
+  Committed: c => `<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 .8 11.2 6 6 11.2.8 6Z" style="fill:${c};stroke:${c === "currentColor" ? "currentColor" : "var(--ink)"};stroke-width:1.1"/></svg>`,
   Pipeline: c => `<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1.2 10.8 6 6 10.8 1.2 6Z" style="fill:none;stroke:${c};stroke-width:1.5;stroke-dasharray:2 1.4"/></svg>`,
-  Open: c => `<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="4.2" style="fill:${c}"/></svg>`};
+  Open: c => `<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="4.2" style="fill:${c};fill-opacity:.42;stroke:${c};stroke-width:1"/></svg>`};
 const stageCount = k => opps.filter(o => o.stage === k).length;
 // WRI Global Power Plant Database v1.3: every plant, every fuel, worldwide. Row = [lat, lon, fuel, MW, name, iso2, iso3, year, id]
 const FUELS = D.fuels, WRI = D.wri;
@@ -316,7 +316,12 @@ $("#stats").innerHTML = [
   [stageCount("Existing"), "existing projects"], [stageCount("Committed"), "committed"], [stageCount("Pipeline"), "announced"],
   [fmt(WRI.length), "power plants (WRI)"], [CC.hubs.length + CC.projects.length, "CCUS hubs and projects"]].map(([v, l]) => `<span class="stat"><b>${v}</b> ${l}</span>`).join("");
 
-const visible = n => (n.kv || 0) >= state.kv && Math.max(n.dc, n.bess) >= state.min && state.recs.has(n.rec) && (!state.openOnly || n.site === "Open site") &&
+// suitability screen: which asset the node is screened for, and the score floor for each
+// "DC or BESS": a node passes if it clears at least one floor that is set (a floor of 0 means that asset is not screened)
+const suitable = n => state.fit === "dc" ? n.dc >= state.minDc : state.fit === "bess" ? n.bess >= state.minBess :
+  state.fit === "both" ? n.dc >= state.minDc && n.bess >= state.minBess :
+  (!state.minDc && !state.minBess) || (state.minDc > 0 && n.dc >= state.minDc) || (state.minBess > 0 && n.bess >= state.minBess);
+const visible = n => (n.kv || 0) >= state.kv && suitable(n) && state.recs.has(n.rec) && (!state.openOnly || n.site === "Open site") &&
   (!state.q || (n.n + " " + (n.nl || "") + " " + n.town).toLowerCase().includes(state.q));
 // ---------------------------------------------------------------- globe engine
 // Orthographic globe on two canvases: a base layer redrawn only when the view changes, and a light overlay redrawn every
@@ -548,16 +553,18 @@ function drawBase() {
   }
   // nodes (back-to-front not needed: hidden hemisphere is culled)
   NVIS.fill(0);
-  g.lineWidth = 0.8; g.strokeStyle = C.bg; g.globalAlpha = state.alpha.nodes;
+  g.lineWidth = 1; g.globalAlpha = state.alpha.nodes;
   if (state.show.nodes) nodes.forEach((n, i) => {
     pv(NV[3 * i], NV[3 * i + 1], NV[3 * i + 2], o);
     NS[2 * i] = o[0]; NS[2 * i + 1] = o[1];
     if (!onScreen(o) || !visible(n)) return;
     NVIS[i] = 1;
-    const r = (n.kv >= 380 ? 4.2 : n.kv >= 220 ? 3.3 : 2.5) * z * (0.55 + 0.45 * o[2]) * state.size.nodes;
-    g.fillStyle = nodeColor(n);
-    if (r < 1.7) { g.fillRect(o[0] - r, o[1] - r, 2 * r, 2 * r); return; }   // cheap squares at globe scale
-    g.beginPath(); g.arc(o[0], o[1], r, 0, 7); g.fill(); g.stroke();
+    const r = (n.kv >= 380 ? 3.9 : n.kv >= 220 ? 3.1 : 2.4) * z * (0.55 + 0.45 * o[2]) * state.size.nodes, col = nodeColor(n);
+    g.fillStyle = col;
+    if (r < 1.7) { g.globalAlpha = state.alpha.nodes * 0.75; g.fillRect(o[0] - r, o[1] - r, 2 * r, 2 * r); g.globalAlpha = state.alpha.nodes; return; }   // cheap squares at globe scale
+    // potential site: translucent disc + same-colour ring, so it reads as "possible" next to the solid, outlined project symbols
+    g.beginPath(); g.arc(o[0], o[1], r, 0, 7); g.globalAlpha = state.alpha.nodes * 0.42; g.fill();
+    g.globalAlpha = state.alpha.nodes; g.strokeStyle = col; g.stroke();
   });
   g.globalAlpha = 1;
   const sq = (V, col, on, S) => { S.fill(0); if (!on) return; g.fillStyle = col; for (let i = 0; i < V.length / 3; i++) { pv(V[3 * i], V[3 * i + 1], V[3 * i + 2], o); if (!onScreen(o)) continue; S[3 * i] = o[0]; S[3 * i + 1] = o[1]; S[3 * i + 2] = 1; const r = 3 * z; g.fillRect(o[0] - r, o[1] - r, 2 * r, 2 * r); } };
@@ -568,14 +575,19 @@ function drawBase() {
   opps.forEach((op, i) => {
     if (!OS[3 * i + 2] || !oppOn(op)) return;
     const x = OS[3 * i], y = OS[3 * i + 1], col = op.asset === "DC" ? C.dc : op.asset === "BESS" ? C.bess : C.both;
+    const zz = Math.max(0.85, z);
     if (op.stage === "Existing") {
-      const r = 5.2 * z; g.fillStyle = col; g.fillRect(x - r, y - r, 2 * r, 2 * r); g.lineWidth = 1.6; g.strokeStyle = C.ink; g.strokeRect(x - r, y - r, 2 * r, 2 * r);
+      const r = 6 * zz;
+      g.lineWidth = 4.5; g.strokeStyle = C.bg; g.strokeRect(x - r, y - r, 2 * r, 2 * r);                       // halo
+      g.fillStyle = col; g.fillRect(x - r, y - r, 2 * r, 2 * r); g.lineWidth = 1.8; g.strokeStyle = C.ink; g.strokeRect(x - r, y - r, 2 * r, 2 * r);
       return;
     }
-    const r = 6.4 * z;
+    const r = 7.6 * zz;
     g.beginPath(); g.moveTo(x, y - r); g.lineTo(x + r, y); g.lineTo(x, y + r); g.lineTo(x - r, y); g.closePath();
-    if (op.stage === "Committed") { g.fillStyle = col; g.fill(); g.lineWidth = 1.3; g.strokeStyle = C.bg; g.stroke(); }
-    else { g.fillStyle = C.bg; g.fill(); g.setLineDash([2.5, 1.8]); g.lineWidth = 1.8; g.strokeStyle = col; g.stroke(); g.setLineDash([]); }
+    g.lineWidth = 4.5; g.strokeStyle = C.bg; g.stroke();                                                         // halo
+    if (op.stage === "Committed") { g.fillStyle = col; g.fill(); g.lineWidth = 1.6; g.strokeStyle = C.ink; g.stroke(); }
+    else { g.fillStyle = C.bg; g.fill(); g.setLineDash([3, 2]); g.lineWidth = 2.2; g.strokeStyle = col; g.stroke(); g.setLineDash([]);
+      g.beginPath(); g.arc(x, y, 1.6 * zz, 0, 7); g.fillStyle = col; g.fill(); }
   });
   g.globalAlpha = 1;
   // CCUS: hexagon = hub, triangle = project; solid = operating, filled = FID/building, dashed outline = pipeline, grey = inactive
@@ -1116,7 +1128,7 @@ const ASSETS = [["DC", "Data centre", "var(--dc)"], ["BESS", "Storage", "var(--b
 const PRECS = [["site", "Site"], ["town", "Town"], ["region", "Region"]];
 const FUEL_GROUPS = {Fossil: ["Coal", "Gas", "Oil", "Cogeneration", "Petcoke"], Clean: ["Hydro", "Wind", "Solar", "Geothermal", "Biomass", "Wave and Tidal", "Storage"], Nuclear: ["Nuclear"]};
 const MW_STEPS = [0, 10, 25, 50, 100, 250, 500, 1000, 2000];
-const DEFAULTS = () => ({col: "rec", kv: 0, min: 0, recs: new Set(REC.map(r => r[0])), openOnly: false,
+const DEFAULTS = () => ({col: "rec", kv: 0, min: 0, fit: "any", minDc: 0, minBess: 0, recs: new Set(REC.map(r => r[0])), openOnly: false,
   show: {nodes: true, projects: true}, stages: {Existing: true, Committed: true, Pipeline: true}, assets: new Set(ASSETS.map(a => a[0])),
   fuels: new Set(FUELS), minMW: 50, cgroups: new Set(CGROUPS.map(g => g[0])), lgroups: new Set(LGRP.map(g => g[0])), lkinds: new Set(["interconnector", "backbone"]), cprec: new Set(PRECS.map(p => p[0])),
   alpha: {nodes: 1, projects: 1, wri: 0.75, ccus: 1}, size: {nodes: 1, wri: 1},
@@ -1124,14 +1136,14 @@ const DEFAULTS = () => ({col: "rec", kv: 0, min: 0, recs: new Set(REC.map(r => r
     wri: true, ccusHubs: true, ccusProj: true, ccusIea: false, ogci: false}});
 const PRESETS = {
   screen: {},
-  dc: {col: "dc", stagesAssets: ["DC", "Interconnector"], layers: {cables: true, landing: true, wri: false, ccusHubs: false, ccusProj: false}},
-  bess: {col: "bess", stagesAssets: ["BESS", "Hybrid"], fuels: ["Coal", "Solar", "Wind"], minMW: 25, layers: {grq: true, solar: true, ccusHubs: false, ccusProj: false, cables: false}},
+  dc: {col: "dc", fit: "dc", minDc: 60, stagesAssets: ["DC", "Interconnector"], layers: {cables: true, landing: true, wri: false, ccusHubs: false, ccusProj: false}},
+  bess: {col: "bess", fit: "bess", minBess: 60, stagesAssets: ["BESS", "Hybrid"], fuels: ["Coal", "Solar", "Wind"], minMW: 25, layers: {grq: true, solar: true, ccusHubs: false, ccusProj: false, cables: false}},
   gen: {show: {nodes: false, projects: false}, minMW: 0, alpha: {wri: 0.9}, layers: {ccusHubs: false, ccusProj: false, cables: false, dcs: false, bats: false}},
   ccus: {show: {nodes: false, projects: false}, fuels: FUEL_GROUPS.Fossil, minMW: 100, layers: {ccusIea: true, ogci: true, cables: false, dcs: false, bats: false}},
   clean: {show: {nodes: true, projects: false}, layers: {wri: false, ccusHubs: false, ccusProj: false, cables: false, flows: false, dcs: false, bats: false, night: false}}};
 function applyPreset(name) {
   const d = DEFAULTS(), p = PRESETS[name] || {};
-  Object.assign(state, {col: p.col || d.col, kv: d.kv, min: d.min, recs: d.recs, openOnly: d.openOnly, show: {...d.show, ...(p.show || {})}, stages: d.stages,
+  Object.assign(state, {col: p.col || d.col, kv: d.kv, min: d.min, fit: p.fit || d.fit, minDc: p.minDc ?? d.minDc, minBess: p.minBess ?? d.minBess, recs: d.recs, openOnly: d.openOnly, show: {...d.show, ...(p.show || {})}, stages: d.stages,
     assets: p.stagesAssets ? new Set(p.stagesAssets) : d.assets, fuels: p.fuels ? new Set(p.fuels) : d.fuels, minMW: p.minMW ?? d.minMW,
     cgroups: d.cgroups, lgroups: d.lgroups, lkinds: d.lkinds, cprec: d.cprec, alpha: {...d.alpha, ...(p.alpha || {})}, size: d.size});
   Object.assign(state.layers, d.layers, p.layers || {});
@@ -1189,7 +1201,10 @@ function buildPanel() {
   P.appendChild(section("nodes", "Grid nodes", `${fmt(nodes.length)} substations ≥100 kV · OSM ${D.asof}`, () => state.show.nodes, v => state.show.nodes = v, [
     seg("Colour by", [["rec", "Sequencing call"], ["dc", "DC score"], ["bess", "BESS score"]], () => state.col, v => state.col = v),
     seg("Voltage", [[0, "All"], [150, "≥150"], [220, "≥220"], [380, "≥380 kV"]], () => state.kv, v => state.kv = v),
-    range("Min score (DC or BESS)", 0, 90, 5, () => state.min, v => state.min = v, v => v || "any"),
+    seg("Screen nodes for", [["any", "DC or BESS"], ["dc", "DC"], ["bess", "BESS"], ["both", "Both"]], () => state.fit, v => { state.fit = v; if (v === "dc" || v === "bess") state.col = v; buildPanel(); }),
+    state.fit !== "bess" ? range("Min DC score", 0, 95, 5, () => state.minDc, v => state.minDc = v, v => v ? v + "+" : "any") : null,
+    state.fit !== "dc" ? range("Min BESS score", 0, 95, 5, () => state.minBess, v => state.minBess = v, v => v ? v + "+" : "any") : null,
+    el("p", {class: "note", id: "fit-note"}, ""),
     checklist("Sequencing call", REC.map(([r, c]) => [r, r, `<span class="dot" style="background:var(${c})"></span>`, recCnt(r)]), state.recs),
     checklist("Site", [["open", "Open sites only (no project snapped)", SYM.Open("var(--mon)"), nodes.filter(n => n.site === "Open site").length]], {has: () => state.openOnly, add: () => state.openOnly = true, delete: () => state.openOnly = false, clear: () => state.openOnly = false}),
     range("Marker size", 0.6, 1.8, 0.1, () => state.size.nodes, v => state.size.nodes = v, pct),
@@ -1241,6 +1256,8 @@ function counts() {
   const cv = CCUS_ITEMS.filter(ccusOn).length;
   const set = (id, txt) => { const m = $("#meta-" + id); if (m) m.dataset.live = txt; };
   $("#meta-nodes").textContent = `${fmt(nv)} of ${fmt(nodes.length)} shown · OSM ${D.asof}`;
+  { const fn = $("#fit-note"); if (fn) { const pass = nodes.filter(suitable).length;
+    fn.textContent = `${fmt(pass)} nodes meet the suitability screen (${{any: "DC or BESS", dc: "DC", bess: "BESS", both: "DC and BESS"}[state.fit]}${state.fit !== "bess" && state.minDc ? ", DC ≥ " + state.minDc : ""}${state.fit !== "dc" && state.minBess ? ", BESS ≥ " + state.minBess : ""}). Scores are 0–100 screening proxies; see Method.`; } }
   $("#meta-projects").textContent = `${pv} of ${opps.length} shown · sources checked ${D.checkedProjects || "9–10 Oct 2026"}`;
   $("#meta-wri").textContent = `${fmt(wv)} of ${fmt(WRI.length)} WRI${av ? ` + ${av} added` : ""} shown · WRI data to 2021, checked Oct 2026`;
   $("#meta-ccus").textContent = `${cv} of ${CCUS_ITEMS.length} placed items shown · checked 9 Oct 2026`;
@@ -1279,9 +1296,9 @@ function legend() {
   if (state.show.nodes) {
     if (state.col === "rec") h += `<div class="row">${REC.map(([r, c]) => `<span><i style="background:var(${c})"></i>${r}</span>`).join("")}</div>`;
     else h += `<div class="row"><span>${state.col === "dc" ? "DC" : "BESS"} score</span><span style="display:inline-block;width:110px;height:8px;border-radius:999px;background:linear-gradient(90deg,var(--mon),var(--${state.col === "dc" ? "dc" : "bess"}))"></span><span>30 → 95</span></div>`;
-    h += `<div class="row"><span>${SYM.Open("var(--mon)")}circle = grid node, a potential site</span></div>`;
+    h += `<div class="row"><span>${SYM.Open("var(--mon)")}soft circle = grid node, a <b>potential</b> site (scored, no project)</span></div>`;
   }
-  if (state.show.projects) h += `<div class="row"><span>${SYM.Existing("var(--soft)")}existing</span><span>${SYM.Committed("var(--soft)")}committed</span><span>${SYM.Pipeline("var(--soft)")}announced</span><span style="color:var(--soft)">colour: <b style="color:var(--dc)">DC</b> · <b style="color:var(--bess)">BESS</b> · <b style="color:var(--both)">hybrid</b></span></div>`;
+  if (state.show.projects) h += `<div class="row"><span style="color:var(--soft)">Solid outlined shapes = <b style="color:var(--ink)">actual projects</b>:</span><span>${SYM.Existing("var(--soft)")}existing</span><span>${SYM.Committed("var(--soft)")}committed</span><span>${SYM.Pipeline("var(--soft)")}announced</span><span style="color:var(--soft)">colour: <b style="color:var(--dc)">DC</b> · <b style="color:var(--bess)">BESS</b> · <b style="color:var(--both)">hybrid</b></span></div>`;
   if (state.layers.lines) h += `<div class="row"><span><s style="border-color:var(--l400)"></s>≥380 kV</span><span><s style="border-color:var(--l220)"></s>220–330</span><span><s style="border-color:var(--l110)"></s>110–154</span>${state.layers.cables ? `<span><s style="border-color:var(--dc);border-top-style:dashed"></s>subsea cable</span>` : ""}</div>`;
   if (state.layers.links) h += `<div class="row"><span style="color:var(--soft)"><b style="color:var(--ic)">━</b> interconnector, <b>━</b> domestic backbone project: solid = existing, dashed = under construction, dotted = planned, grey = stalled, idle or withdrawn</span></div>`;
   if (state.layers.entsoe) h += `<div class="row"><span style="color:var(--soft)">◇ ENTSO-E map station (2022) with no OSM substation within 20 km; schematic position</span></div>`;
